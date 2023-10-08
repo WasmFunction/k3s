@@ -1725,8 +1725,14 @@ func (kl *Kubelet) syncPod(ctx context.Context, updateType kubetypes.SyncPodType
 	// Volume manager will not mount volumes for terminating pods
 	// TODO: once context cancellation is added this check can be removed
 	if !kl.podWorkers.IsPodTerminationRequested(pod.UID) {
+		var err error
 		// Wait for volumes to attach/mount
-		if err := kl.volumeManager.WaitForAttachAndMount(pod); err != nil {
+		if updateType == kubetypes.SyncPodCreate || updateType == kubetypes.SyncPodUpdate {
+			err = kl.volumeManager.WaitForAttachAndMountCreate(pod)
+		} else {
+			err = kl.volumeManager.WaitForAttachAndMount(pod)
+		}
+		if err != nil {
 			kl.recorder.Eventf(pod, v1.EventTypeWarning, events.FailedMountVolume, "Unable to attach or mount volumes: %v", err)
 			klog.ErrorS(err, "Unable to attach or mount volumes for pod; skipping pod", "pod", klog.KObj(pod))
 			return false, err

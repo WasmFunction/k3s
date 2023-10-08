@@ -26,6 +26,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -66,6 +67,8 @@ type Reconciler interface {
 	// volumes that should be attached are attached and volumes that should
 	// be detached are detached and trigger attach/detach operations as needed.
 	Run(stopCh <-chan struct{})
+
+	Reconcile()
 
 	// StatesHasBeenSynced returns true only after syncStates process starts to sync
 	// states at least once after kubelet starts
@@ -152,6 +155,8 @@ type reconciler struct {
 	skippedDuringReconstruction   map[v1.UniqueVolumeName]*globalVolumeInfo
 	kubeletPodsDir                string
 	timeOfLastSync                time.Time
+
+	reconcileLock sync.Mutex
 }
 
 func (rc *reconciler) Run(stopCh <-chan struct{}) {
@@ -172,7 +177,13 @@ func (rc *reconciler) reconciliationLoopFunc() func() {
 	}
 }
 
+func (rc *reconciler) Reconcile() {
+	rc.reconcile()
+}
+
 func (rc *reconciler) reconcile() {
+	rc.reconcileLock.Lock()
+	defer rc.reconcileLock.Unlock()
 	// Unmounts are triggered before mounts so that a volume that was
 	// referenced by a pod that was deleted and is now referenced by another
 	// pod is unmounted from the first pod before being mounted to the new

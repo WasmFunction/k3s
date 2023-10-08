@@ -82,6 +82,8 @@ const (
 	// call waits before retrying
 	podAttachAndMountRetryInterval = 300 * time.Millisecond
 
+	podAttachAndMountCreateRetryInterval = 20 * time.Millisecond
+
 	// waitForAttachTimeout is the maximum amount of time a
 	// operationexecutor.Mount call will wait for a volume to be attached.
 	// Set to 10 minutes because we've seen attach operations take several
@@ -104,6 +106,9 @@ type VolumeManager interface {
 	// An error is returned if all volumes are not attached and mounted within
 	// the duration defined in podAttachAndMountTimeout.
 	WaitForAttachAndMount(pod *v1.Pod) error
+
+	// fast call of WaitForAttachAndMount
+	WaitForAttachAndMountCreate(pod *v1.Pod) error
 
 	// WaitForUnmount processes the volumes referenced in the specified
 	// pod and blocks until they are all unmounted (reflected in the actual
@@ -417,6 +422,60 @@ func (vm *volumeManager) WaitForAttachAndMount(pod *v1.Pod) error {
 		podAttachAndMountRetryInterval,
 		podAttachAndMountTimeout,
 		vm.verifyVolumesMountedFunc(uniquePodName, expectedVolumes))
+
+	if err != nil {
+		unmountedVolumes :=
+			vm.getUnmountedVolumes(uniquePodName, expectedVolumes)
+		// Also get unattached volumes for error message
+		unattachedVolumes :=
+			vm.getUnattachedVolumes(expectedVolumes)
+
+		if len(unmountedVolumes) == 0 {
+			return nil
+		}
+
+		return fmt.Errorf(
+			"unmounted volumes=%v, unattached volumes=%v: %s",
+			unmountedVolumes,
+			unattachedVolumes,
+			err)
+	}
+
+	klog.V(3).InfoS("All volumes are attached and mounted for pod", "pod", klog.KObj(pod))
+	return nil
+}
+
+func (vm *volumeManager) WaitForAttachAndMountCreate(pod *v1.Pod) error {
+	if pod == nil {
+		return nil
+	}
+
+	expectedVolumes := getExpectedVolumes(pod)
+	if len(expectedVolumes) == 0 {
+		// No volumes to verify
+		return nil
+	}
+
+	klog.V(3).InfoS("Waiting for volumes to attach and mount for pod", "pod", klog.KObj(pod))
+	uniquePodName := util.GetUniquePodName(pod)
+
+	klog.InfoS("[---youtirsin---] WaitForAttachAndMount start ", pod.Name)
+	// Some pods expect to have Setup called over and over again to update.
+	// Remount plugins for which this is true. (Atomically updating volumes,
+	// like Downward API, depend on this to update the contents of the volume).
+	vm.desiredStateOfWorldPopulator.ReprocessPod(uniquePodName)
+
+	go func() {
+		vm.desiredStateOfWorldPopulator.FindAndAddNewPods()
+		vm.reconciler.Reconcile()
+	}()
+
+	err := wait.PollImmediate(
+		podAttachAndMountCreateRetryInterval,
+		podAttachAndMountTimeout,
+		vm.verifyVolumesMountedFunc(uniquePodName, expectedVolumes))
+
+	klog.InfoS("[---youtirsin---] WaitForAttachAndMount end ", pod.Name)
 
 	if err != nil {
 		unmountedVolumes :=

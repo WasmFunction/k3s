@@ -53,6 +53,8 @@ import (
 type DesiredStateOfWorldPopulator interface {
 	Run(sourcesReady config.SourcesReady, stopCh <-chan struct{})
 
+	FindAndAddNewPods()
+
 	// ReprocessPod sets value for the specified pod in processedPods
 	// to false, forcing it to be reprocessed. This is required to enable
 	// remounting volumes on pod updates (volumes like Downward API volumes
@@ -137,6 +139,8 @@ type desiredStateOfWorldPopulator struct {
 	csiMigratedPluginManager  csimigration.PluginManager
 	intreeToCSITranslator     csimigration.InTreeToCSITranslator
 	volumePluginMgr           *volume.VolumePluginMgr
+
+	findAddLock sync.Mutex
 }
 
 type processedPods struct {
@@ -185,9 +189,15 @@ func (dswp *desiredStateOfWorldPopulator) populatorLoop() {
 	dswp.findAndRemoveDeletedPods()
 }
 
+func (dswp *desiredStateOfWorldPopulator) FindAndAddNewPods() {
+	dswp.findAndAddNewPods()
+}
+
 // Iterate through all pods and add to desired state of world if they don't
 // exist but should
 func (dswp *desiredStateOfWorldPopulator) findAndAddNewPods() {
+	dswp.findAddLock.Lock()
+	defer dswp.findAddLock.Unlock()
 	// Map unique pod name to outer volume name to MountedVolume.
 	mountedVolumesForPod := make(map[volumetypes.UniquePodName]map[string]cache.MountedVolume)
 	for _, mountedVolume := range dswp.actualStateOfWorld.GetMountedVolumes() {
